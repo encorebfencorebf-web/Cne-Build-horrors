@@ -1,0 +1,211 @@
+package funkin.backend.assets;
+
+import funkin.backend.system.Flags;
+import haxe.io.Path;
+import lime.graphics.Image;
+import lime.media.AudioBuffer;
+import lime.text.Font;
+import lime.utils.Bytes;
+import openfl.utils.AssetLibrary;
+import sys.io.File;
+import lime.system.System;
+
+#if MOD_SUPPORT
+import funkin.backend.utils.SysZip.SysZipEntry;
+import funkin.backend.utils.SysZip;
+
+class ZipFolderLibrary extends AssetLibrary implements IModsAssetLibrary {
+	public var basePath:String;
+	public var modName:String;
+	public var libName:String;
+	public var prefix = 'assets/';
+	
+	public var zip:SysZip;
+	public var assets:Map<String, SysZipEntry> = [];
+	public var lowerCaseAssets:Map<String, SysZipEntry> = [];
+	public var nameMap:Map<String, String> = [];
+
+	public var PRELOAD_VIDEOS:Bool = true;
+
+	public function new(basePath:String, libName:String, ?modName:String, ?preloadVideos:Bool = true) {
+		this.libName = libName;
+
+		var root:String = "";
+		#if android
+		root = haxe.io.Path.normalize("/storage/emulated/0/.CodenameEngine-v1.0.1/mods/");
+		#elseif ios
+		root = System.documentsDirectory;
+		if (root != null && !root.endsWith("/")) root += "/";
+		root += "mods/";
+		#end
+
+		if (root != "" && !Path.isAbsolute(basePath)) {
+			if (basePath.startsWith("mods/")) {
+				basePath = basePath.substr(5);
+			}
+			basePath = Path.join([root, basePath]);
+		}
+
+		this.basePath = basePath;
+		this.modName = (modName == null) ? libName : modName;
+
+		zip = SysZip.openFromFile(basePath);
+		for(entry in zip.entries) {
+			if (entry.fileName.length < 0 || entry.fileName.endsWith("/")) continue;
+
+			var name:String = entry.fileName.toLowerCase();
+			lowerCaseAssets[name] = assets[name] = assets[entry.fileName] = entry;
+			nameMap.set(name, entry.fileName);
+		}
+
+		super();
+
+		isCompressed = true;
+		PRELOAD_VIDEOS = (!PRELOAD_VIDEOS) ? exists("assets/data/PRECACHE_VIDEOS", "TEXT") : PRELOAD_VIDEOS;
+	}
+
+	public function precacheVideos() {
+		_videoExtensions = Flags.VIDEO_EXTS;
+		
+		videoCacheRemap = [];
+		for (entry in zip.entries) {
+			var name = entry.fileName.toLowerCase();
+			if (_videoExtensions.contains(Path.extension(name))) getPath(prefix+name);
+		}
+
+		var count:Int = 0;
+        for (_ in videoCacheRemap.keys()) count++;
+		if (count <= 0) return;
+		trace('Precached $count video${(count == 1) ? "" : "s"}');
+	}
+
+	public var _videoExtensions:Array<String> = [Flags.VIDEO_EXT];
+	public var videoCacheRemap:Map<String, String> = [];
+	
+	public function getVideoRemap(originalPath:String):String {
+		if (!_videoExtensions.contains(Path.extension(_parsedAsset))) return originalPath;
+		if (videoCacheRemap.exists(originalPath)) return videoCacheRemap.get(originalPath);
+
+		var tempDir:String = "./.temp/";
+		#if mobile
+		tempDir = Path.join([System.applicationStorageDirectory, "temp"]);
+		#end
+
+		if (!sys.FileSystem.exists(tempDir)) sys.FileSystem.createDirectory(tempDir);
+
+		var fileName = '${_parsedAsset.length}-zipvideo-${_parsedAsset.split("/").pop()}';
+		var newPath = Path.join([tempDir, fileName]);
+
+		File.saveBytes(newPath, unzip(assets[_parsedAsset]));
+		videoCacheRemap.set(originalPath, newPath);
+		return newPath;
+	}
+
+	function toString():String {
+		return '(ZipFolderLibrary: $libName/$modName | ${zip.entries.length} entries | Detected Video Extensions: ${_videoExtensions.join(", ")})';
+	}
+
+	public var _parsedAsset:String;
+	public override function getAudioBuffer(id:String):AudioBuffer {
+		__parseAsset(id);
+		return AudioBuffer.fromBytes(unzip(assets[_parsedAsset]));
+	}
+	public override function getBytes(id:String):Bytes {
+		__parseAsset(id);
+		return Bytes.fromBytes(unzip(assets[_parsedAsset]));
+	}
+	public override function getFont(id:String):Font {
+		__parseAsset(id);
+		return ModsFolder.registerFont(Font.fromBytes(unzip(assets[_parsedAsset])));
+	}
+	public override function getImage(id:String):Image {
+		__parseAsset(id);
+		return Image.fromBytes(unzip(assets[_parsedAsset]));
+	}
+
+	public override function getPath(id:String):String {
+		if (!__parseAsset(id)) return null;
+		return getAssetPath();
+	}
+
+	public inline function unzip(f:SysZipEntry) return (f == null) ? null : zip.unzipEntry(f);
+
+	public function __parseAsset(asset:String):Bool {
+		if (!asset.startsWith(prefix)) return false;
+		_parsedAsset = asset.substr(prefix.length);
+		if (ModsFolder.useLibFile) {
+			var file = new haxe.io.Path(_parsedAsset);
+			if(file.file.startsWith("LIB_")) {
+				var library = file.file.substr(4);
+				if(library != modName) return false;
+
+				_parsedAsset = file.dir + "." + file.ext;
+			}
+		}
+
+		_parsedAsset = _parsedAsset.toLowerCase();
+		if (nameMap.exists(_parsedAsset)) _parsedAsset = nameMap.get(_parsedAsset);
+		return true;
+	}
+
+	public function __isCacheValid(cache:Map<String, Dynamic>, asset:String, isLocal:Bool = false) {
+		if (cache.exists(isLocal ? '$libName:$asset': asset)) return true;
+		return false;
+	}
+
+	public override function exists(asset:String, type:String):Bool {
+		if(!__parseAsset(asset)) return false;
+
+		return assets[_parsedAsset] != null;
+	}
+
+	private inline function getAssetPath() {
+		return getVideoRemap('$basePath/$_parsedAsset');
+	}
+
+	public function getFiles(folder:String):Array<String> {
+		if (!folder.endsWith("/")) folder += "/";
+		if (!__parseAsset(folder)) return [];
+
+		var content:Array<String> = [];
+		var checkPath = _parsedAsset.toLowerCase();
+
+		@:privateAccess
+		for(k=>e in lowerCaseAssets) {
+			if (k.toLowerCase().startsWith(checkPath)) {
+				if(nameMap.exists(k))
+					k = nameMap.get(k);
+				var fileName = k.substr(_parsedAsset.length);
+				if (!fileName.contains("/") && fileName.length > 0)
+					content.pushOnce(fileName);
+			}
+		}
+		return content;
+	}
+
+	public function getFolders(folder:String):Array<String> {
+		if (!folder.endsWith("/")) folder += "/";
+		if (!__parseAsset(folder)) return [];
+
+		var content:Array<String> = [];
+		var checkPath = _parsedAsset.toLowerCase();
+
+		@:privateAccess
+		for(k=>e in lowerCaseAssets) {
+			if (k.toLowerCase().startsWith(checkPath)) {
+				if(nameMap.exists(k))
+					k = nameMap.get(k);
+				var fileName = k.substr(_parsedAsset.length);
+				var index = fileName.indexOf("/");
+				if (index != -1 && fileName.length > 0) {
+					var s = fileName.substr(0, index);
+					content.pushOnce(s);
+				}
+			}
+		}
+		return content;
+	}
+
+	public override function list(type:String):Array<String> { return [for(k=>e in nameMap) '$prefix$e']; }
+}
+#end

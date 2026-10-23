@@ -1,0 +1,50 @@
+name: Sync Fork
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# made by Asteriskuu
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/CodenameCrew/CodenameEngine.git
+          git fetch upstream main
+
+      - name: Merge upstream into main
+        run: |
+          git checkout main
+
+          if ! git merge upstream/main -X ours --no-edit; then
+            echo "Merge failed. Checking for conflicts..."
+
+            git status --porcelain | grep '^DU ' | cut -c 4- | tr '\n' '\0' | xargs -0 -r git rm
+
+            git status --porcelain | grep '^UU \|^UD \|^DU \|^AA \|^DD ' | cut -c 4- | while read file; do
+              git checkout --ours "$file"
+              git add "$file"
+            done
+
+            git commit --allow-empty -m "Auto-merged upstream/main and resolved conflicts"
+          fi
+           
+      - name: Push updated branch
+        run: |
+          git push origin main

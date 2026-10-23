@@ -1,0 +1,51 @@
+name: Replace Text
+
+on:
+  workflow_dispatch:
+    inputs:
+      find_word:
+        description: 'Word to search for'
+        required: true
+        type: string
+      replace_word:
+        description: 'Word to replace with'
+        required: true
+        type: string
+      file_name:
+        description: 'Specific file to target (leave empty to replace in all files)'
+        required: false
+        type: string
+
+jobs:
+  replace-text:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Replace text
+        run: |
+          FIND_WORD="${{ github.event.inputs.find_word }}"
+          REPLACE_WORD="${{ github.event.inputs.replace_word }}"
+          FILE_NAME="${{ github.event.inputs.file_name }}"
+          
+          if [ -z "$FILE_NAME" ]; then
+            echo "No file specified. Replacing '$FIND_WORD' with '$REPLACE_WORD' in all files."
+            find . -type f -not -path '*/.*' -exec sed -i "s/$FIND_WORD/$REPLACE_WORD/g" {} +
+          else
+            echo "File specified. Searching for '$FILE_NAME' to replace text."
+            FILE_PATH=$(find . -type f -name "$FILE_NAME" -not -path '*/.*' | head -n 1)
+            
+            if [ -z "$FILE_PATH" ]; then
+              echo "Error: File '$FILE_NAME' not found in the repository."
+              exit 1
+            fi
+            
+            echo "Found file at: $FILE_PATH. Replacing text."
+            sed -i "s/$FIND_WORD/$REPLACE_WORD/g" "$FILE_PATH"
+          fi
+
+      - name: Commit and push changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Changed: ${{ github.event.inputs.find_word }} to ${{ github.event.inputs.replace_word }} in ${{ github.event.inputs.file_name || 'all files' }}"
